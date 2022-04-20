@@ -1,0 +1,318 @@
+---
+title: "Lab 03 - Using Propensity Scores"
+---
+
+
+```{r, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(smd)
+library(gtsummary)
+library(broom)
+library(survey)
+```
+
+## Exercise 1
+```{r}
+coffee_df = read.csv("coffee_town_df.csv")
+head(coffee_df)
+```
+This dataset has 5 variables: coffee_town, cups_of_coffee, age, job, smoke.  
+'coffee_town', 'job' and 'smoke' are categorical variable. 'cups_of_coffee' is continuous variable.  
+
+```{r}
+nrow(coffee_df)
+```
+
+The dataset has 1100 observations.  
+
+```{r}
+sum(coffee_df$coffee_town)
+```
+113 observations are in exposed group.  
+And this dataset has no missing data.  
+
+## Exercise 2
+```{r}
+coffee_df %>%
+  tbl_summary(
+    by = coffee_town,
+    include = c(
+      "age",
+      "job",
+      "smoke"
+    )
+  ) %>%
+  add_overall()
+```
+
+From this table, we can see that,  
+72% of the people who don't live in coffee town have easy job, 47% for the people who live in coffee town have easy job.  
+42% of the people who live in coffee town don't have job, which is much bigger proportion than the people who don't live in the coffee town.
+The median age in the exposure group is 49 which is older than the control group 39.  
+
+## Exercise 3
+```{r}
+coffee_df_ps1 = glm(coffee_town ~ age + smoke + job,
+    data = coffee_df,
+    family = binomial()) %>%
+  augment(type.predict = "response",
+          data = coffee_df)
+head(coffee_df_ps1)
+```
+
+```{r}
+coffee_df_ps2 <- coffee_df_ps1 %>%
+  tidyr::pivot_wider(names_from = coffee_town, 
+                     values_from = .fitted, 
+                     names_prefix = "coffee_town_p")
+```
+
+```{r warning = FALSE}
+library(ggplot2)
+ggplot(coffee_df_ps1, 
+       aes(x = .fitted, 
+           fill = as.factor(coffee_town))) +
+  geom_histogram(bins = 30)+ 
+  labs(
+    fill = "Live in coffee town\n(1 = Yes, 0 = No)",
+    x = "propensity score")
+```
+
+We can observe that the group that is not live in coffee town is significantly larger than the group that is live in coffee town. Most of the people who live in coffee town have propensity scores in the range (0, 0.34), indicating that they aren't likely live in the coffee town.  
+
+## Exercise 4
+```{r}
+coffee_df_ps1 <- coffee_df_ps1 %>%
+  mutate(
+    w_ato = (1-.fitted)*coffee_town +.fitted*(1-coffee_town)
+  )
+```
+The weight I'm going to use is ATO. Using this weight is to create new population in which two groups have similar distribution and good variance, which made an "equipoise” population. Then use this new weighted data to compute average treatment effect.  
+
+## Exercise 5
+```{r}
+svy_des = svydesign(
+  ids = ~ 1,
+  data = coffee_df_ps1,
+  weights = ~ w_ato
+)
+```
+
+```{r}
+svy_des %>%
+  tbl_svysummary(
+    by = coffee_town,
+    include = c(
+      "age",
+      "job",
+      "smoke"
+    )
+  ) %>%
+  add_overall()
+```
+
+We can see that the exposure group differs slightly from the unweighted table, however the control group varies a lot, making it similar to the exposure group.  
+
+## Exercise 6
+```{r}
+coffee_df_ps2 <- coffee_df_ps1 %>%
+  tidyr::pivot_wider(names_from = coffee_town, 
+                     values_from = .fitted, 
+                     names_prefix = "coffee_town_p")
+```
+
+```{r warning = FALSE}
+ggplot(coffee_df_ps2) +
+  geom_histogram(bins = 50, 
+                 aes(x = coffee_town_p1, 
+                     weight = w_ato), 
+                 fill = "cornflower blue") +
+  geom_histogram(bins = 50, 
+                 aes(x = coffee_town_p0, 
+                     weight = w_ato,
+                     y = - stat(count)), 
+                 fill = "orange") + 
+  scale_y_continuous("count", label = abs) + 
+  scale_x_continuous("propensity score") +
+  geom_label(
+    label = "Live in Coffee Town", 
+    x = 0.25,
+    y = 10,
+  ) + 
+  geom_label(
+    label = "Doesn't Live in Coffee Town",
+    x = 0.25, 
+    y = -10
+  ) + 
+  theme_minimal()
+```
+
+After weighted, these two groups have a similar distribution of propensity scores. But in the control group, we can see that some observations are lying between [0.4, 0.6], and no observations lay in this range. We may need a better propensity score model.  
+
+## Exercise 7
+```{r}
+smds <- coffee_df_ps1 %>% 
+  summarise( 
+    across( 
+      c(
+      age,
+      job,
+      smoke
+    ), 
+      list(
+        unweighted = ~smd(.x, coffee_town)$estimate,
+        weighted = ~smd(.x, coffee_town, w_ato)$estimate 
+      )
+    )
+  )
+```
+
+```{r}
+plot_df <- smds %>% 
+  pivot_longer( 
+    everything(),
+    values_to = "SMD", 
+    names_to = c("variable", "Method"), 
+    names_pattern = "(.*)_(.*)"
+  )
+```
+
+```{r}
+ggplot(
+  data = plot_df,
+  aes(x = abs(SMD), y = variable, 
+      group = Method, color = Method)
+) +  
+  geom_line(orientation = "y") +
+  geom_point() + 
+  geom_vline(xintercept = 0.1, 
+             color = "black", size = 0.1)
+```
+  
+For unweighted data, the variable 'job' has very high SMD, 'smoke' and 'age' have similar SMD. After weighted, all three variables has similar small SMD.  
+
+## Exercise 8
+Unweighted eCDF
+```{r}
+ggplot(coffee_df_ps1, 
+       aes(x = age, group = coffee_town, 
+           color = factor(coffee_town))) +
+  stat_ecdf() +
+  scale_color_manual("Live in Coffee Town", 
+                     values = c("#5154B8", "#5DB854"),
+                     labels = c("No", "Yes")) + 
+  scale_x_continuous("Age") + 
+  ylab("Proportion")
+```
+  
+Based on the plot, we can see that,  
+About 50% of the people who live in Coffee Town are less than 50 years old.   
+About 50% of people who do not live in Coffee Town are less than 37 years old.  
+The proportion of people live in Coffee Town from <20 to <40 stays the same. Most people in Coffee Town are younger than 20 or older than  40.    
+The distribution of age in each group is very different.    
+
+```{r}
+ecdf_1 <- coffee_df_ps1 %>%
+  filter(coffee_town == 1) %>%
+  arrange(age) %>%
+  mutate(cum_pct = cumsum(w_ato) / sum(w_ato))
+ecdf_0 <- coffee_df_ps1 %>%
+  filter(coffee_town == 0) %>%
+  arrange(age) %>%
+  mutate(cum_pct = cumsum(w_ato) / sum(w_ato))
+
+ggplot(ecdf_1, aes(x = age, y = cum_pct)) +
+  geom_line(color = "#5DB854") +
+  geom_line(data = ecdf_0, 
+            aes(x = age, y = cum_pct), 
+            color = "#5154B8") + 
+  xlab("Age") + 
+  ylab("Proportion")
+```
+  
+After weighted, it makes the plot of the two groups a little bit close, but still not good. I'm going to refit the propensity score model to see if it can make it better.    
+
+## Exercise 9
+
+```{r}
+coffee_df_ps1 <- glm(coffee_town ~ splines::ns(age, 3) + smoke + job,
+    data = coffee_df,
+    family = binomial()) %>%
+  augment(type.predict = "response",
+          data = coffee_df)%>%
+  mutate(w_ato = (1-.fitted)*coffee_town +.fitted*(1-coffee_town))
+```
+
+
+weighted eCDF
+```{r}
+ecdf_1 <- coffee_df_ps1 %>%
+  filter(coffee_town == 1) %>%
+  arrange(age) %>%
+  mutate(cum_pct = cumsum(w_ato) / sum(w_ato))
+ecdf_0 <- coffee_df_ps1 %>%
+  filter(coffee_town == 0) %>%
+  arrange(age) %>%
+  mutate(cum_pct = cumsum(w_ato) / sum(w_ato))
+
+ggplot(ecdf_1, aes(x = age, y = cum_pct)) +
+  geom_line(color = "#5DB854") +
+  geom_line(data = ecdf_0, 
+            aes(x = age, y = cum_pct), 
+            color = "#5154B8") + 
+  xlab("Age") + 
+  ylab("Proportion")
+```
+
+We can see that the plot of two groups are very close to each other. It is much better.  
+
+SMD and Love Plot
+```{r}
+smds <- coffee_df_ps1 %>% 
+  summarise( 
+    across( 
+      c(
+      age,
+      job,
+      smoke
+    ), 
+      list(
+        unweighted = ~smd(.x, coffee_town)$estimate,
+        weighted = ~smd(.x, coffee_town, w_ato)$estimate 
+      )
+    )
+  )
+```
+
+```{r}
+plot_df <- smds %>% 
+  pivot_longer( 
+    everything(),
+    values_to = "SMD", 
+    names_to = c("variable", "Method"), 
+    names_pattern = "(.*)_(.*)"
+  )
+```
+
+```{r}
+ggplot(
+  data = plot_df,
+  aes(x = abs(SMD), y = variable, 
+      group = Method, color = Method)
+) +  
+  geom_line(orientation = "y") +
+  geom_point() + 
+  geom_vline(xintercept = 0.1, 
+             color = "black", size = 0.1)
+```
+
+The love plot is also good, I will choose this model as my final model.  
+
+## Exercise 10
+```{r}
+coffee_df_ps1 %>%
+  summarise(ato_effect = sum(cups_of_coffee * coffee_town * w_ato)/sum(coffee_town * w_ato) - 
+             sum(cups_of_coffee * (1-coffee_town) * w_ato)/sum((1-coffee_town) * w_ato))
+```
+  
+For the population of individuals who reasonably could live in either town, the people in the coffee town buy 0.0068 fewer coffee than those in a neighboring town. But the difference is relatively small. To better estimate the average causal effect, we may use bootstrap. For example, running 1000 iterations, compute the average causal effect for each iteration, then take their mean. This way may give us a better estimate of the average causal effect.  
